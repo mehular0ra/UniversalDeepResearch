@@ -26,13 +26,16 @@ from typing import Any, Dict, List, Literal, TypedDict
 from openai import OpenAI
 from tavily import TavilyClient
 
+from google.genai import Client as GeminiClient
+from google.genai import types
+
 from config import get_config
 
 # Get configuration
 config = get_config()
 
 # Configuration system
-ApiType = Literal["nvdev", "openai", "tavily"]
+ApiType = Literal["nvdev", "openai", "tavily", "gemini"]
 
 
 class ModelConfig(TypedDict):
@@ -43,6 +46,17 @@ class ModelConfig(TypedDict):
 
 # Available model configurations
 MODEL_CONFIGS: Dict[str, ModelConfig] = {
+    "gemini-2.5": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "api_type": "gemini",
+        "completion_config": {
+            "model": "models/gemini-2.0-flash",
+            "temperature": 0.2,
+            "top_p": 0.7,
+            "max_tokens": 2048,
+            "stream": True,
+        },
+    },
     "gpt-4.1-mini": {
         "base_url": "https://api.openai.com/v1",
         "api_type": "openai",
@@ -118,6 +132,7 @@ def get_api_key(api_type: ApiType) -> str:
         "nvdev": config.model.api_key_file,
         "openai": "openai_api.txt",
         "tavily": config.search.tavily_api_key_file,
+        "gemini": "gemini_api.txt",
     }
 
     key_file = api_key_files.get(api_type)
@@ -137,7 +152,7 @@ def get_api_key(api_type: ApiType) -> str:
 
 def create_lm_client(model_config: ModelConfig | None = None) -> OpenAI:
     """
-    Create an OpenAI client instance with the specified configuration.
+    Create an OpenAI and Gemini client instance with the specified configuration.
 
     This function creates a client for the configured LLM provider.
     The client can be customized with specific model configurations
@@ -157,7 +172,10 @@ def create_lm_client(model_config: ModelConfig | None = None) -> OpenAI:
     model_config = model_config or MODEL_CONFIGS[DEFAULT_MODEL]
     api_key = get_api_key(model_config["api_type"])
 
-    return OpenAI(base_url=model_config["base_url"], api_key=api_key)
+    if model_config["api_type"] == "gemini":
+        return GeminiClient(api_key=api_key)
+    elif model_config["api_type"] == "openai":
+        return OpenAI(base_url=model_config["base_url"], api_key=api_key)
 
 
 def create_tavily_client() -> TavilyClient:
@@ -182,7 +200,7 @@ def create_tavily_client() -> TavilyClient:
 
 
 def get_completion(
-    client: OpenAI,
+    client: OpenAI | GeminiClient,
     messages: List[Dict[str, Any]],
     model_config: ModelConfig | None = None,
 ) -> str:
@@ -194,7 +212,7 @@ def get_completion(
     specific message formatting.
 
     Args:
-        client: OpenAI client instance
+        client: OpenAI or Gemini client instance
         messages: List of messages for the completion
         model_config: Optional model configuration to override defaults.
                      If None, uses the default model configuration.
@@ -221,6 +239,17 @@ def get_completion(
             )
             messages.insert(0, {"role": "system", "content": "detailed thinking off"})
 
+    if model_config["api_type"] == "gemini":
+        return get_completion_gemini(client, messages, model_config)
+    elif model_config["api_type"] == "openai":
+        return get_completion_openai(client, messages, model_config)
+
+
+def get_completion_openai(
+    client: OpenAI,
+    messages: List[Dict[str, Any]],
+    model_config: ModelConfig,
+) -> str:
     completion = client.chat.completions.create(
         messages=messages, **model_config["completion_config"]
     )
@@ -235,6 +264,59 @@ def get_completion(
         ret = completion.choices[0].message.content
 
     return ret
+
+
+def gemini_completion(
+    client: GeminiClient, messages: List[Dict[str, Any]], model_config: ModelConfig
+) -> str:
+    history = to_gemini_history(messages)
+    chat = client.chats.create(
+        model="gemini-2.0-flash",
+        config=model_config["completion_config"],
+        history=history,
+    )
+    cfg = _gemini_config_from_completion_config(model_config["completion_config"])
+    response = chat.send_message("", config=cfg)
+    return response.text
+
+
+def to_gemini_history(messages):
+    out = []
+    for m in messages:
+        # Expecting your internal format: {"role": "...", "content": "..."}
+        out.append(
+            {
+                "role": "user" if m["role"] == "user" else "model",
+                "parts": [{"text": m["content"]}],
+            }
+        )
+    return out
+
+
+def _gemini_config_from_completion_config(cfg: dict) -> types.GenerateContentConfig:
+    """Convert OpenAI-style completion_config into a valid Gemini GenerateContentConfig."""
+
+    # extract only fields Gemini accepts
+    temperature = cfg.get("temperature")
+    top_p = cfg.get("top_p")
+    top_k = cfg.get("top_k")
+    candidate_count = cfg.get("candidate_count") or cfg.get("n")
+    max_output_tokens = cfg.get("max_output_tokens") or cfg.get("max_tokens")
+
+    typed = {}
+
+    if temperature is not None:
+        typed["temperature"] = float(temperature)
+    if top_p is not None:
+        typed["top_p"] = float(top_p)
+    if top_k is not None:
+        typed["top_k"] = int(top_k)
+    if candidate_count is not None:
+        typed["candidate_count"] = int(candidate_count)
+    if max_output_tokens is not None:
+        typed["max_output_tokens"] = int(max_output_tokens)
+
+    return types.GenerateContentConfig(**typed)
 
 
 def is_output_positive(output: str) -> bool:
