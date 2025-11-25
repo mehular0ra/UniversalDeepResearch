@@ -43,6 +43,17 @@ class ModelConfig(TypedDict):
 
 # Available model configurations
 MODEL_CONFIGS: Dict[str, ModelConfig] = {
+    "gpt-4.1-mini": {
+        "base_url": "https://api.openai.com/v1",
+        "api_type": "openai",
+        "completion_config": {
+            "model": "gpt-4.1-mini",
+            "temperature": 0.2,
+            "top_p": 0.7,
+            "max_tokens": 2048,
+            "stream": True,
+        },
+    },
     "llama-3.1-8b": {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_type": "nvdev",

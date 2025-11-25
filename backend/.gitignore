@@ -52,3 +52,6 @@ logs/
 uvicorn_main.txt
 
 .DS_Store
+
+# my adds
+openai_api.txt
